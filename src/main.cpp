@@ -81,7 +81,6 @@ bool setup(const char* _KernelFileName){
     cl_platform_id platforms[64];
 
     platformResult = clGetPlatformIDs( 64, platforms, &numPlatforms );
-	
 
     if (platformResult != CL_SUCCESS) {
         std::cerr << "Couldnt get platform IDs!\n Failed with error(" << platformResult << ")\n";
@@ -89,15 +88,14 @@ bool setup(const char* _KernelFileName){
     }
 
     for(int i = 0; i < numPlatforms; i++){
-	char version[128];
-	clGetPlatformInfo(platforms[i], CL_PLATFORM_VERSION, sizeof(version), version, NULL);
-	std::cout << "Platform version: " << version << std::endl;
-
+		char version[128];
+		clGetPlatformInfo(platforms[i], CL_PLATFORM_VERSION, sizeof(version), version, NULL);
+		std::cout << "Platform version: " << version << std::endl;
 
         cl_device_id devices[64];
         unsigned int deviceCount;
         cl_int deviceResult = clGetDeviceIDs( platforms[i], CL_DEVICE_TYPE_GPU, 64, devices, &deviceCount);
-	std::cout << deviceCount << " devices found\n";
+		std::cout << deviceCount << " devices found\n";
 
         if( deviceResult == CL_SUCCESS){
             for (int j = 0; j < deviceCount; j++){
@@ -195,4 +193,13 @@ void cleanup(){
 
 int main(int argc, char* argv[]){
 
+    // arg parsing
+		
+	if (setup("../kernel.cl") != true){
+		std::cerr << "Failed to set up opencl\n";
+		cleanup();
+		return 1;
+	}
+
+    // do computation!!
 }
