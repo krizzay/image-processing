@@ -3,6 +3,7 @@
 #include <fstream>
 #include <cmath>
 #include <vector>
+#include <algorithm>
 #include <CL/cl.h>
 
 cl_context context;
@@ -46,9 +47,8 @@ static std::string readFile(const char* fileName){
 }
 
 
-// dont know if this is needed
-int getLocalWorkSize(size_t maxLocalSize, int globalSize){
-    int result = -1;
+size_t getLocalWorkSize(size_t maxLocalSize, size_t globalSize){
+    size_t result = -1;
 
     for(int i = 1; i <= sqrt(globalSize); i++){
         if (globalSize % i == 0){
@@ -75,14 +75,6 @@ int getLocalWorkSize(size_t maxLocalSize, int globalSize){
 
     return result;
 }               
-
-/*
- Some OpenCL-compliant devices don’t support image processing.
- To check for image support from the host, call clGetDeviceInfo with the 
- CL_DEVICE_IMAGE_SUPPORT option. If the result is CL_FALSE, the device doesn’t 
- support images. On the kernel, the __IMAGE_SUPPORT__ macro will be set to 1 
- if images are supported. If not, the macro will be undefined. 
-*/
 
 bool setup(const char* _KernelFileName){
     cl_int platformResult = CL_SUCCESS;
@@ -183,7 +175,7 @@ bool setup(const char* _KernelFileName){
     }
 
     cl_int kernelResult;              // this string must mach entry function name
-	kernel = clCreateKernel( program, "roll", &kernelResult);
+	kernel = clCreateKernel( program, "test", &kernelResult);
     if (programResult != CL_SUCCESS){
         std::cerr << "Failed to make kernel!\n Failed with error (" << programResult << ")\n";
         return false;
@@ -204,6 +196,56 @@ void cleanup(){
     clReleaseDevice(device); // added in 1.2
 }
 
+const char* getChannelOrderName(cl_channel_order order) {
+    switch(order) {
+        case CL_R: return "CL_R";
+        case CL_A: return "CL_A";
+        case CL_RG: return "CL_RG";
+        case CL_RA: return "CL_RA";
+        case CL_RGB: return "CL_RGB";
+        case CL_RGBA: return "CL_RGBA";
+        case CL_BGRA: return "CL_BGRA";
+        case CL_ARGB: return "CL_ARGB";
+        case CL_INTENSITY: return "CL_INTENSITY";
+        case CL_LUMINANCE: return "CL_LUMINANCE";
+        default: return "UNKNOWN_CHANNEL_ORDER";
+    }
+}
+
+const char* getChannelTypeName(cl_channel_type type) {
+    switch(type) {
+        case CL_SNORM_INT8: return "CL_SNORM_INT8";
+        case CL_SNORM_INT16: return "CL_SNORM_INT16";
+        case CL_UNORM_INT8: return "CL_UNORM_INT8";
+        case CL_UNORM_INT16: return "CL_UNORM_INT16";
+        case CL_SIGNED_INT8: return "CL_SIGNED_INT8";
+        case CL_SIGNED_INT16: return "CL_SIGNED_INT16";
+        case CL_SIGNED_INT32: return "CL_SIGNED_INT32";
+        case CL_UNSIGNED_INT8: return "CL_UNSIGNED_INT8";
+        case CL_UNSIGNED_INT16: return "CL_UNSIGNED_INT16";
+        case CL_UNSIGNED_INT32: return "CL_UNSIGNED_INT32";
+        case CL_HALF_FLOAT: return "CL_HALF_FLOAT";
+        case CL_FLOAT: return "CL_FLOAT";
+        default: return "UNKNOWN_CHANNEL_TYPE";
+    }
+}
+
+template <typename T> void printTestImg(T* arr, int* dims){
+
+	for(int i = 0; i < dims[0]; i++){
+			for(int j = 0; j < dims[1]; j++){
+	
+				std::cout << "(";
+				for(int k = 0; k < dims[2]; k++){
+						std::cout << (uint64_t)arr[dims[0]* (dims[1] * i + j) + k ] << ", ";
+				}
+				std::cout << ")" << ", ";
+			}
+			std::cout << "|" << std::endl;
+	}
+	std::cout << std::endl;
+
+}
 
 int main(int argc, char* argv[]){
 
@@ -215,6 +257,20 @@ int main(int argc, char* argv[]){
 		return 1;
 	}
 
+	unsigned int numFormats = 0;
+	clGetSupportedImageFormats( context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D, 0, nullptr, &numFormats);
+
+	cl_image_format formats[numFormats];
+	CHECK_RES( clGetSupportedImageFormats( context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D, numFormats, formats, &numFormats),
+				"Failed to get supported image formats!");
+
+	for(cl_image_format f : formats){
+
+		std::cout << "channel order : " << getChannelOrderName(f.image_channel_order) <<
+					",   channel type : " << getChannelTypeName(f.image_channel_data_type) <<
+					std::endl;
+	}
+
     // do computation!!
 	// TODO:
 	// read in image 
@@ -224,8 +280,11 @@ int main(int argc, char* argv[]){
 	uint32_t imgY = 10;
 	uint32_t pixSize = 4;
 
+	//cant zero init with variables size apparently
 	uint8_t inimg[imgX][imgY][pixSize] = {0};
 	uint8_t outimg[imgX][imgY][pixSize] = {0};
+
+	std::fill(&inimg[0][0][0], &inimg[imgX-1][imgY-1][pixSize-1], 0);
 
 	cl_image_format imageFormat;
 	imageFormat.image_channel_order = CL_RGBA;
@@ -235,10 +294,12 @@ int main(int argc, char* argv[]){
 	imageDescriptor.image_type = CL_MEM_OBJECT_IMAGE2D;
 	imageDescriptor.image_width = imgX;
 	imageDescriptor.image_height = imgY;
-	// imageDescriptor.image_depth is for 3d images
-	imageDescriptor.image_row_pitch = imgX;
+	imageDescriptor.image_depth = 0;
+	imageDescriptor.image_row_pitch = 0; //0 lets opencl calculate it
+	imageDescriptor.image_slice_pitch = 0;
 	imageDescriptor.num_mip_levels = 0; // not using mip mapping
 	imageDescriptor.num_samples = 0; // must be 0 according to docs, whats the point of it then?
+	imageDescriptor.mem_object = nullptr;
 									 
 	cl_int imageRes = CL_TRUE;
 	cl_mem inImgBuf = clCreateImage( context,
@@ -259,31 +320,43 @@ int main(int argc, char* argv[]){
 	CHECK_RES(imageRes, "Failed to create out image!");
 	memories.push_back(outImgBuf);
 	
-	CHECK_RES( clSetKernelArg(kernel, 0, sizeof(cl_mem), inImgBuf),
+	CHECK_RES( clSetKernelArg(kernel, 0, sizeof(cl_mem), &inImgBuf),
 				"Failed to set kernel arg (inimg)!");
-	CHECK_RES( clSetKernelArg(kernel, 1, sizeof(cl_mem), outImgBuf),
+	CHECK_RES( clSetKernelArg(kernel, 1, sizeof(cl_mem), &outImgBuf),
 				"Failed to set kernel arg (outimg)!");
 
+	size_t maxLocalWorkSize;
+	CHECK_RES( clGetKernelWorkGroupInfo(kernel, device, CL_KERNEL_WORK_GROUP_SIZE,
+						   				sizeof(size_t), &maxLocalWorkSize, nullptr),
+				"Failed to query work group info from device!");
+
 	size_t workDims[] = {imgX, imgY};
-	size_t groupSize[] = {256, 256}; // arbitrary
-	CHECK_RES( clEnqueueNDRangeKernel(commandQueue, kernel, 2, 0, workDims, groupSize, 0, nullptr, nullptr),
+	//TODO: figure something better out for local work group sizes
+	//size_t groupSize[] = { getLocalWorkSize(maxLocalWorkSize, imgX),
+	//						getLocalWorkSize(maxLocalWorkSize, imgY)}; 
+	
+	size_t groupSize[] = {5, 5};
+
+	CHECK_RES( clEnqueueNDRangeKernel(commandQueue, kernel, 2, 0, workDims,
+						   			  groupSize, 0, nullptr, nullptr),
 				"Failed to enqueeueeue kernel!");
 
 	size_t origin[] = {0, 0, 0};
 	size_t readRegion[] = {imgX, imgY, 1};
 	CHECK_RES( clEnqueueReadImage( commandQueue, outImgBuf, CL_TRUE, origin,
-						   			readRegion, imgX, 0, &outimg, 0, nullptr, nullptr),
+						   			readRegion, 0, 0, outimg, 0, nullptr, nullptr),
 				"Failed to enqueue read iamge!");
 
 	clFinish(commandQueue);
 
-	for(int i = 0; i < imgX; i++){
-			for(int j = 0; j < imgY; j++){
-	
-				std::cout << outimg[i][j] << ", ";
-			}
-			std::cout << std::endl;
-	}
+	int printDims[] = {imgX, imgY, 4};
+	std::cout << "\n\ninput\n\n";
+
+	printTestImg<uint8_t>((unsigned char*)inimg, printDims);
+
+	std::cout << "\n\noutput\n\n";
+
+	printTestImg<uint8_t>((unsigned char*)outimg, printDims);
 
 	cleanup();
 
