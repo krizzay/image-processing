@@ -237,13 +237,35 @@ template <typename T> void printTestImg(T* arr, int* dims){
 	
 				std::cout << "(";
 				for(int k = 0; k < dims[2]; k++){
-						std::cout << (uint64_t)arr[dims[0]* (dims[1] * i + j) + k ] << ", ";
+						std::cout << (i * (dims[1] * dims[2])) + (dims[2] * j) + k  << ", ";
 				}
 				std::cout << ")" << ", ";
 			}
 			std::cout << "|" << std::endl;
 	}
 	std::cout << std::endl;
+
+}
+
+template <typename T> void fill(T* arr, int* dims, T val){
+
+	/*
+	for(int i = 0; i < dims[0]; i++){
+			for(int j = 0; j < dims[1]; j++){
+				for(int k = 0; k < dims[2]; k++){
+						arr[dims[0]* (dims[1] * i + j) + k ]  = val;
+				}
+			}
+	}
+	*/
+
+	std::cout << "filling " << dims[0] * dims[1] * dims[2] << " items";
+
+	for(int i = 0; i < dims[0] * dims[1] * dims[2]; i++){
+			std::cout << "arr[i] is " << arr[i];
+			arr[i] = val;
+			std::cout << " idx - " << i << " is now " << arr[i] << std::endl;
+	}
 
 }
 
@@ -257,6 +279,7 @@ int main(int argc, char* argv[]){
 		return 1;
 	}
 
+	// display all image formats
 	unsigned int numFormats = 0;
 	clGetSupportedImageFormats( context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D, 0, nullptr, &numFormats);
 
@@ -271,7 +294,6 @@ int main(int argc, char* argv[]){
 					std::endl;
 	}
 
-    // do computation!!
 	// TODO:
 	// read in image 
 	// do operations on them :3
@@ -280,15 +302,44 @@ int main(int argc, char* argv[]){
 	uint32_t imgY = 10;
 	uint32_t pixSize = 4;
 
-	//cant zero init with variables size apparently
-	uint8_t inimg[imgX][imgY][pixSize] = {0};
-	uint8_t outimg[imgX][imgY][pixSize] = {0};
+	//cant zero init with variable size apparently
+	uint16_t inimg[imgX][imgY][pixSize] = {0};
+	uint16_t outimg[imgX][imgY][pixSize] = {0};
 
-	std::fill(&inimg[0][0][0], &inimg[imgX-1][imgY-1][pixSize-1], 0);
+	std::cout << sizeof(inimg) << " is arr size" << std::endl;
+	std::cout << alignof(inimg) << " is arr align" << std::endl;
+
+	//int dims[] = {imgX, imgY, pixSize};
+	//fill<uint16_t>((uint16_t *)inimg, dims, (uint16_t)0);
+	
+	for(int i = 0; i < imgX; i++){
+		for(int j = 0; j < imgY; j++){
+			for(int k = 0; k < pixSize; k++){
+					inimg[i][j][k] = 0;
+					outimg[i][j][k] = 0;
+			}
+		}
+	}
+
+	int printDims[] = {imgX, imgY, 4};
+	std::cout << "\n\n post fill \n\n";
+	printTestImg<uint16_t>((uint16_t*)inimg, printDims);
+	
+	std::cout << "\n\n manual print\n\n";
+	for(int i = 0; i < imgX; i++){
+		for(int j = 0; j < imgY; j++){
+			std::cout << "(";
+			for(int k = 0; k < pixSize; k++){
+					std::cout << inimg[i][j][k] << ", ";
+			}
+			std::cout << ") ";
+		}
+		std::cout << "|||\n";
+	}
 
 	cl_image_format imageFormat;
 	imageFormat.image_channel_order = CL_RGBA;
-	imageFormat.image_channel_data_type = CL_UNSIGNED_INT8;
+	imageFormat.image_channel_data_type = CL_UNSIGNED_INT16;
 
 	cl_image_desc imageDescriptor;
 	imageDescriptor.image_type = CL_MEM_OBJECT_IMAGE2D;
@@ -306,7 +357,7 @@ int main(int argc, char* argv[]){
 				   					 CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR, 
 									 &imageFormat,
 									 &imageDescriptor,
-									 &inimg,
+									 inimg,
 									 &imageRes);
 	CHECK_RES(imageRes, "Failed to create in image!");
 	memories.push_back(inImgBuf);
@@ -315,7 +366,7 @@ int main(int argc, char* argv[]){
 				   					 CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR, 
 									 &imageFormat,
 									 &imageDescriptor,
-									 &outimg,
+									 outimg,
 									 &imageRes);
 	CHECK_RES(imageRes, "Failed to create out image!");
 	memories.push_back(outImgBuf);
@@ -343,20 +394,46 @@ int main(int argc, char* argv[]){
 
 	size_t origin[] = {0, 0, 0};
 	size_t readRegion[] = {imgX, imgY, 1};
+
 	CHECK_RES( clEnqueueReadImage( commandQueue, outImgBuf, CL_TRUE, origin,
-						   			readRegion, 0, 0, outimg, 0, nullptr, nullptr),
+						   			readRegion, imgX * sizeof(uint16_t) * 4, 0, outimg, 0, nullptr, nullptr),
+				"Failed to enqueue read iamge!");
+
+	CHECK_RES( clEnqueueReadImage( commandQueue, inImgBuf, CL_TRUE, origin,
+						   			readRegion, imgX * sizeof(uint16_t) * 4, 0, inimg, 0, nullptr, nullptr),
 				"Failed to enqueue read iamge!");
 
 	clFinish(commandQueue);
 
-	int printDims[] = {imgX, imgY, 4};
 	std::cout << "\n\ninput\n\n";
 
-	printTestImg<uint8_t>((unsigned char*)inimg, printDims);
+	//printTestImg<uint16_t>((uint16_t*)inimg, printDims);
+	//std::cout << "\n\n manual print\n\n";
+	for(int i = 0; i < imgX; i++){
+		for(int j = 0; j < imgY; j++){
+			std::cout << "(";
+			for(int k = 0; k < pixSize; k++){
+					std::cout << inimg[i][j][k] << ", ";
+			}
+			std::cout << ") ";
+		}
+		std::cout << "|||\n";
+	}
 
 	std::cout << "\n\noutput\n\n";
 
-	printTestImg<uint8_t>((unsigned char*)outimg, printDims);
+	//printTestImg<uint16_t>((uint16_t*)outimg, printDims);
+	//std::cout << "\n\n manual print\n\n";
+	for(int i = 0; i < imgX; i++){
+		for(int j = 0; j < imgY; j++){
+			std::cout << "(";
+			for(int k = 0; k < pixSize; k++){
+					std::cout << outimg[i][j][k] << ", ";
+			}
+			std::cout << ") ";
+		}
+		std::cout << "|||\n";
+	}
 
 	cleanup();
 
