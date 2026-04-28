@@ -5,6 +5,9 @@
 #include <vector>
 #include <algorithm>
 #include <CL/cl.h>
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+#include "stb_image_write.h"
 
 cl_context context;
 cl_command_queue commandQueue;
@@ -237,7 +240,7 @@ template <typename T> void printTestImg(T* arr, int* dims){
 	
 				std::cout << "(";
 				for(int k = 0; k < dims[2]; k++){
-						std::cout << (i * (dims[1] * dims[2])) + (dims[2] * j) + k  << ", ";
+						std::cout << arr[(i * (dims[1] * dims[2])) + (dims[2] * j) + k]  << ", ";
 				}
 				std::cout << ")" << ", ";
 			}
@@ -249,22 +252,8 @@ template <typename T> void printTestImg(T* arr, int* dims){
 
 template <typename T> void fill(T* arr, int* dims, T val){
 
-	/*
-	for(int i = 0; i < dims[0]; i++){
-			for(int j = 0; j < dims[1]; j++){
-				for(int k = 0; k < dims[2]; k++){
-						arr[dims[0]* (dims[1] * i + j) + k ]  = val;
-				}
-			}
-	}
-	*/
-
-	std::cout << "filling " << dims[0] * dims[1] * dims[2] << " items";
-
 	for(int i = 0; i < dims[0] * dims[1] * dims[2]; i++){
-			std::cout << "arr[i] is " << arr[i];
 			arr[i] = val;
-			std::cout << " idx - " << i << " is now " << arr[i] << std::endl;
 	}
 
 }
@@ -280,6 +269,7 @@ int main(int argc, char* argv[]){
 	}
 
 	// display all image formats
+	/*
 	unsigned int numFormats = 0;
 	clGetSupportedImageFormats( context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D, 0, nullptr, &numFormats);
 
@@ -293,6 +283,7 @@ int main(int argc, char* argv[]){
 					",   channel type : " << getChannelTypeName(f.image_channel_data_type) <<
 					std::endl;
 	}
+	*/
 
 	// TODO:
 	// read in image 
@@ -306,37 +297,15 @@ int main(int argc, char* argv[]){
 	uint16_t inimg[imgX][imgY][pixSize] = {0};
 	uint16_t outimg[imgX][imgY][pixSize] = {0};
 
+	int x,y,n;
+	unsigned char *data = stbi_load("../images/cover.png", &x, &y, &n, 0);
+
 	std::cout << sizeof(inimg) << " is arr size" << std::endl;
 	std::cout << alignof(inimg) << " is arr align" << std::endl;
 
-	//int dims[] = {imgX, imgY, pixSize};
-	//fill<uint16_t>((uint16_t *)inimg, dims, (uint16_t)0);
+	int dims[] = {imgX, imgY, pixSize};
+	fill<uint16_t>((uint16_t *)inimg, dims, (uint16_t)0);
 	
-	for(int i = 0; i < imgX; i++){
-		for(int j = 0; j < imgY; j++){
-			for(int k = 0; k < pixSize; k++){
-					inimg[i][j][k] = 0;
-					outimg[i][j][k] = 0;
-			}
-		}
-	}
-
-	int printDims[] = {imgX, imgY, 4};
-	std::cout << "\n\n post fill \n\n";
-	printTestImg<uint16_t>((uint16_t*)inimg, printDims);
-	
-	std::cout << "\n\n manual print\n\n";
-	for(int i = 0; i < imgX; i++){
-		for(int j = 0; j < imgY; j++){
-			std::cout << "(";
-			for(int k = 0; k < pixSize; k++){
-					std::cout << inimg[i][j][k] << ", ";
-			}
-			std::cout << ") ";
-		}
-		std::cout << "|||\n";
-	}
-
 	cl_image_format imageFormat;
 	imageFormat.image_channel_order = CL_RGBA;
 	imageFormat.image_channel_data_type = CL_UNSIGNED_INT16;
@@ -405,35 +374,7 @@ int main(int argc, char* argv[]){
 
 	clFinish(commandQueue);
 
-	std::cout << "\n\ninput\n\n";
-
-	//printTestImg<uint16_t>((uint16_t*)inimg, printDims);
-	//std::cout << "\n\n manual print\n\n";
-	for(int i = 0; i < imgX; i++){
-		for(int j = 0; j < imgY; j++){
-			std::cout << "(";
-			for(int k = 0; k < pixSize; k++){
-					std::cout << inimg[i][j][k] << ", ";
-			}
-			std::cout << ") ";
-		}
-		std::cout << "|||\n";
-	}
-
-	std::cout << "\n\noutput\n\n";
-
-	//printTestImg<uint16_t>((uint16_t*)outimg, printDims);
-	//std::cout << "\n\n manual print\n\n";
-	for(int i = 0; i < imgX; i++){
-		for(int j = 0; j < imgY; j++){
-			std::cout << "(";
-			for(int k = 0; k < pixSize; k++){
-					std::cout << outimg[i][j][k] << ", ";
-			}
-			std::cout << ") ";
-		}
-		std::cout << "|||\n";
-	}
+	printTestImg<uint16_t>((uint16_t*)outimg, dims);
 
 	cleanup();
 
