@@ -5,7 +5,9 @@
 #include <vector>
 #include <algorithm>
 #include <CL/cl.h>
+#include <memory>
 #define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image.h"
 #include "stb_image_write.h"
 
@@ -35,7 +37,6 @@ static std::string readFile(const char* fileName){
         std::cerr << "file aint open :<\n";
         return "oops!";
     }
-    //assert( f.is_open() );
 
     std::string res;
     while( !f.eof() ) {
@@ -155,7 +156,7 @@ bool setup(const char* _KernelFileName){
     }
 
     cl_int programBuildResult = clBuildProgram( program, 1, &device, "-cl-std=CL3.0\0", nullptr, nullptr);
-    if (programBuildResult != CL_SUCCESS){
+	std::cout << "build log" << std::endl;
         char log[1024];
         size_t logLength;
         cl_int programBuildInfoResult = clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 1024, log, &logLength);
@@ -175,7 +176,6 @@ bool setup(const char* _KernelFileName){
             std::cerr << "Failed to build program!\n Failed with error (" << programBuildInfoResult << ")\n";
             return false;
         }
-    }
 
     cl_int kernelResult;              // this string must mach entry function name
 	kernel = clCreateKernel( program, "test", &kernelResult);
@@ -289,31 +289,22 @@ int main(int argc, char* argv[]){
 	// read in image 
 	// do operations on them :3
 	
-	uint32_t imgX = 10;
-	uint32_t imgY = 10;
-	uint32_t pixSize = 4;
-
-	//cant zero init with variable size apparently
-	uint16_t inimg[imgX][imgY][pixSize] = {0};
-	uint16_t outimg[imgX][imgY][pixSize] = {0};
-
 	int x,y,n;
-	unsigned char *data = stbi_load("../images/cover.png", &x, &y, &n, 0);
+	std::unique_ptr<unsigned char> data (stbi_load("../images/cover.png", &x, &y, &n, 0));
+	std::unique_ptr<unsigned char> outData(new unsigned char[x * y * n]);
 
-	std::cout << sizeof(inimg) << " is arr size" << std::endl;
-	std::cout << alignof(inimg) << " is arr align" << std::endl;
+	int dims[] = {x, y, n};
 
-	int dims[] = {imgX, imgY, pixSize};
-	fill<uint16_t>((uint16_t *)inimg, dims, (uint16_t)0);
+	std::cout << "x - " << x << ", y - " << y << ", n - " << n << std::endl;
 	
 	cl_image_format imageFormat;
 	imageFormat.image_channel_order = CL_RGBA;
-	imageFormat.image_channel_data_type = CL_UNSIGNED_INT16;
+	imageFormat.image_channel_data_type = CL_UNSIGNED_INT8;
 
 	cl_image_desc imageDescriptor;
 	imageDescriptor.image_type = CL_MEM_OBJECT_IMAGE2D;
-	imageDescriptor.image_width = imgX;
-	imageDescriptor.image_height = imgY;
+	imageDescriptor.image_width = x;
+	imageDescriptor.image_height = y;
 	imageDescriptor.image_depth = 0;
 	imageDescriptor.image_row_pitch = 0; //0 lets opencl calculate it
 	imageDescriptor.image_slice_pitch = 0;
@@ -326,7 +317,7 @@ int main(int argc, char* argv[]){
 				   					 CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR, 
 									 &imageFormat,
 									 &imageDescriptor,
-									 inimg,
+									 data.get(),
 									 &imageRes);
 	CHECK_RES(imageRes, "Failed to create in image!");
 	memories.push_back(inImgBuf);
@@ -335,7 +326,7 @@ int main(int argc, char* argv[]){
 				   					 CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR, 
 									 &imageFormat,
 									 &imageDescriptor,
-									 outimg,
+									 outData.get(),
 									 &imageRes);
 	CHECK_RES(imageRes, "Failed to create out image!");
 	memories.push_back(outImgBuf);
@@ -350,31 +341,45 @@ int main(int argc, char* argv[]){
 						   				sizeof(size_t), &maxLocalWorkSize, nullptr),
 				"Failed to query work group info from device!");
 
-	size_t workDims[] = {imgX, imgY};
+	size_t maxLocalWorkSizeDims[3];
+	clGetDeviceInfo(device,
+					CL_DEVICE_MAX_WORK_ITEM_SIZES,
+					sizeof(maxLocalWorkSizeDims),
+					maxLocalWorkSizeDims,
+					nullptr);
+
 	//TODO: figure something better out for local work group sizes
-	//size_t groupSize[] = { getLocalWorkSize(maxLocalWorkSize, imgX),
-	//						getLocalWorkSize(maxLocalWorkSize, imgY)}; 
+	size_t workDims[] = {2048, 2048};
 	
-	size_t groupSize[] = {5, 5};
+	size_t div = 256;
+	size_t groupSize[] = {8, 8};
+
+	std::cout << "max work group size - " << maxLocalWorkSize  
+			  << "\n max work local work sizee dims - " << dims[0] << ","
+			  << dims[1] << "," << dims[2] << std::endl;
+	std::cout << "group size :: x - " << (x/div) << ", y - " << (y/div) << std::endl;
 
 	CHECK_RES( clEnqueueNDRangeKernel(commandQueue, kernel, 2, 0, workDims,
 						   			  groupSize, 0, nullptr, nullptr),
 				"Failed to enqueeueeue kernel!");
 
 	size_t origin[] = {0, 0, 0};
-	size_t readRegion[] = {imgX, imgY, 1};
+	size_t readRegion[] = {x, y, 1};
 
 	CHECK_RES( clEnqueueReadImage( commandQueue, outImgBuf, CL_TRUE, origin,
-						   			readRegion, imgX * sizeof(uint16_t) * 4, 0, outimg, 0, nullptr, nullptr),
-				"Failed to enqueue read iamge!");
+						   			readRegion, x * sizeof(unsigned char) * 4, 0, outData.get(),
+								   	0, nullptr, nullptr),
+				"Failed to enqueue read iamge! out");
 
 	CHECK_RES( clEnqueueReadImage( commandQueue, inImgBuf, CL_TRUE, origin,
-						   			readRegion, imgX * sizeof(uint16_t) * 4, 0, inimg, 0, nullptr, nullptr),
-				"Failed to enqueue read iamge!");
+						   			readRegion, x * sizeof(unsigned char) * 4, 0, data.get(),
+								   	0, nullptr, nullptr),
+				"Failed to enqueue read iamge! in");
 
 	clFinish(commandQueue);
 
-	printTestImg<uint16_t>((uint16_t*)outimg, dims);
+	const char *outName = "out.png";
+	stbi_write_png(outName, x, y, n, outData.get(), n * x); 
 
 	cleanup();
 

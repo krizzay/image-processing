@@ -30,7 +30,7 @@ __kernel void test(read_only image2d_t in, write_only image2d_t out){
 
 	uint4 val = read_imageui(in, sampler, (int2)(idxX, idxY));
 
-	uint4 newVal = (uint4)(254,254,254,254) - val;
+	uint4 newVal = (uint4)(255,255,255,0) - val;
 
 //	if(idxX == 6){
 //		printf(" id - (%d , %d )\n ", idxX, idxY);
