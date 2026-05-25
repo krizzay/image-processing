@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <CL/cl.h>
 #include <memory>
+#include <unordered_map>
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image.h"
@@ -15,13 +16,15 @@ cl_context context;
 cl_command_queue commandQueue;
 cl_device_id device;
 
-cl_program program;
-cl_kernel kernel;
+std::unordered_map<std::string, cl_program> programs;
+std::unordered_map<std::string, cl_kernel> kernels;
 
 std::vector<cl_mem> memories;
 
 size_t globalWorkSize = 256;
 size_t localWorkSize = 32;
+
+void cleanup();
 
 #define CHECK_RES(res, txt) \
 		if(res != CL_SUCCESS){ \
@@ -50,7 +53,7 @@ static std::string readFile(const char* fileName){
     return std::move(res);
 }
 
-
+// currently not in use
 size_t getLocalWorkSize(size_t maxLocalSize, size_t globalSize){
     size_t result = -1;
 
@@ -80,7 +83,58 @@ size_t getLocalWorkSize(size_t maxLocalSize, size_t globalSize){
     return result;
 }               
 
-bool setup(const char* _KernelFileName){
+// this function expects a <kernelName>.cl in the src/kernels dir
+bool compileKernel(std::string kernelName){
+
+    // create program and kernel
+	std::string f = "../src/kernels/" + kernelName;
+    std::string s = readFile(f.c_str());
+    const char* programSource = s.c_str();
+    size_t length = 0;
+    cl_int programResult;
+    cl_program program = clCreateProgramWithSource(context, 1, &programSource, &length,
+		   								&programResult);
+    if (programResult != CL_SUCCESS){
+        std::cerr << "Failed to make program!\n Failed with error (" << programResult << ")\n";
+        return false;
+    }
+
+    cl_int programBuildResult = clBuildProgram( program, 1, &device, "-cl-std=CL3.0\0", nullptr, nullptr);
+	std::cout << "building " << kernelName << std::endl;
+	char log[1024];
+	size_t logLength;
+	cl_int programBuildInfoResult = clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 1024, log, &logLength);
+
+	if(logLength >= 1024){
+		char newlog[logLength];
+		cl_int programBuildInfoResult = clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, logLength, newlog, &logLength);
+
+		std::cout << "log len - " << logLength << std::endl;
+		std::cout <<  "log:\n" << newlog << std::endl;
+	}else{
+		std::cout << "log len - " << logLength << std::endl;
+		std::cout <<  "log:\n" << log << std::endl;
+	}
+	
+	if (programBuildInfoResult != CL_SUCCESS){
+		std::cerr << "Failed to build program!\n Failed with error (" << programBuildInfoResult << ")\n";
+		return false;
+	}
+
+    cl_int kernelResult;              // this string must mach entry function name
+	cl_kernel kernel = clCreateKernel( program, "start", &kernelResult);
+    if (programResult != CL_SUCCESS){
+        std::cerr << "Failed to make kernel!\n Failed with error (" << programResult << ")\n";
+        return false;
+    }
+
+	programs[kernelName] = program;
+	kernels[kernelName] = kernel;
+
+	return true;
+}
+
+bool setup(std::vector<std::string> kernelNames){
     cl_int platformResult = CL_SUCCESS;
     cl_uint numPlatforms = 0;
     cl_platform_id platforms[64];
@@ -137,52 +191,18 @@ bool setup(const char* _KernelFileName){
 
     cl_int commandQueueResult;
     cl_queue_properties props[] = { 0 };
-    //commandQueue = clCreateCommandQueue(context, device, 0, &commandQueueResult);
     commandQueue = clCreateCommandQueueWithProperties(context, device, props, &commandQueueResult);
     if (commandQueueResult != CL_SUCCESS){
         std::cerr << "Failed to make command queue!\n Failed with error (" << commandQueueResult << ")\n";
         return false;
     }
 
-    // create program and kernel
-    std::string s = readFile(_KernelFileName);
-    const char* programSource = s.c_str();
-    size_t length = 0;
-    cl_int programResult;
-    program = clCreateProgramWithSource(context, 1, &programSource, &length, &programResult);
-    if (programResult != CL_SUCCESS){
-        std::cerr << "Failed to make program!\n Failed with error (" << programResult << ")\n";
-        return false;
-    }
-
-    cl_int programBuildResult = clBuildProgram( program, 1, &device, "-cl-std=CL3.0\0", nullptr, nullptr);
-	std::cout << "build log" << std::endl;
-        char log[1024];
-        size_t logLength;
-        cl_int programBuildInfoResult = clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 1024, log, &logLength);
-
-        if(logLength >= 1024){
-            char newlog[logLength];
-            cl_int programBuildInfoResult = clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, logLength, newlog, &logLength);
-
-            std::cout << "log len - " << logLength << std::endl;
-            std::cout <<  "newlog:\n" << newlog << std::endl << std::endl;
-        }else{
-            std::cout << "log len - " << logLength << std::endl;
-            std::cout <<  "a log:\n" << log << std::endl << std::endl;
-        }
-        
-        if (programBuildInfoResult != CL_SUCCESS){
-            std::cerr << "Failed to build program!\n Failed with error (" << programBuildInfoResult << ")\n";
-            return false;
-        }
-
-    cl_int kernelResult;              // this string must mach entry function name
-	kernel = clCreateKernel( program, "test", &kernelResult);
-    if (programResult != CL_SUCCESS){
-        std::cerr << "Failed to make kernel!\n Failed with error (" << programResult << ")\n";
-        return false;
-    }
+	for(std::string name : kernelNames){
+		if (compileKernel(name) == false) {
+			std::cout << "Failed to compile kernel" << std::endl;
+			return false;
+		}
+	}
 
     return true;
 }
@@ -192,8 +212,13 @@ void cleanup(){
 		clReleaseMemObject(mem);
 	}
 
-    clReleaseKernel(kernel);
-    clReleaseProgram(program);
+	for (auto iter = kernels.begin(); iter != kernels.end(); ++iter){
+		clReleaseKernel(iter->second);
+	}
+	for (auto iter = programs.begin(); iter != programs.end(); ++iter){
+		clReleaseProgram(iter->second);
+	}
+
     clReleaseCommandQueue(commandQueue);
     clReleaseContext(context);
     clReleaseDevice(device); // added in 1.2
@@ -262,39 +287,39 @@ int main(int argc, char* argv[]){
 
     // arg parsing
 		
-	if (setup("../src/kernels/test.cl") != true){
+	// setup
+	std::vector<std::string> kernelNames = { std::string("test.cl") };
+	if (setup(kernelNames) != true){
 		std::cerr << "Failed to set up opencl\n";
 		cleanup();
 		return 1;
 	}
 
 	// display all image formats
-	/*
-	unsigned int numFormats = 0;
-	clGetSupportedImageFormats( context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D, 0, nullptr, &numFormats);
+	bool displayImageFormats = false;
+	if (displayImageFormats) {
+		unsigned int numFormats = 0;
+		clGetSupportedImageFormats( context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D, 0, nullptr, &numFormats);
 
-	cl_image_format formats[numFormats];
-	CHECK_RES( clGetSupportedImageFormats( context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D, numFormats, formats, &numFormats),
-				"Failed to get supported image formats!");
+		cl_image_format formats[numFormats];
+		CHECK_RES( clGetSupportedImageFormats( context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D, numFormats, formats, &numFormats),
+					"Failed to get supported image formats!");
 
-	for(cl_image_format f : formats){
+		for(cl_image_format f : formats){
 
-		std::cout << "channel order : " << getChannelOrderName(f.image_channel_order) <<
-					",   channel type : " << getChannelTypeName(f.image_channel_data_type) <<
-					std::endl;
+			std::cout << "channel order : " << getChannelOrderName(f.image_channel_order) <<
+						",   channel type : " << getChannelTypeName(f.image_channel_data_type) <<
+						std::endl;
+		}
 	}
-	*/
 
-	// TODO:
-	// read in image 
-	// do operations on them :3
-	
+	//TODO: handle images of arbitrary size correctly
+	// set up images
 	int x,y,n;
 	std::unique_ptr<unsigned char> data (stbi_load("../images/cover.png", &x, &y, &n, 0));
 	std::unique_ptr<unsigned char> outData(new unsigned char[x * y * n]);
 
 	int dims[] = {x, y, n};
-
 	std::cout << "x - " << x << ", y - " << y << ", n - " << n << std::endl;
 	
 	cl_image_format imageFormat;
@@ -331,15 +356,12 @@ int main(int argc, char* argv[]){
 	CHECK_RES(imageRes, "Failed to create out image!");
 	memories.push_back(outImgBuf);
 	
-	CHECK_RES( clSetKernelArg(kernel, 0, sizeof(cl_mem), &inImgBuf),
-				"Failed to set kernel arg (inimg)!");
-	CHECK_RES( clSetKernelArg(kernel, 1, sizeof(cl_mem), &outImgBuf),
-				"Failed to set kernel arg (outimg)!");
-
+	// work group stuff
 	size_t maxLocalWorkSize;
-	CHECK_RES( clGetKernelWorkGroupInfo(kernel, device, CL_KERNEL_WORK_GROUP_SIZE,
+	CHECK_RES( clGetKernelWorkGroupInfo(kernels[kernelNames[0]], device, CL_KERNEL_WORK_GROUP_SIZE,
 						   				sizeof(size_t), &maxLocalWorkSize, nullptr),
 				"Failed to query work group info from device!");
+	
 
 	size_t maxLocalWorkSizeDims[3];
 	clGetDeviceInfo(device,
@@ -349,20 +371,28 @@ int main(int argc, char* argv[]){
 					nullptr);
 
 	//TODO: figure something better out for local work group sizes
-	size_t workDims[] = {2048, 2048};
-	
-	size_t div = 256;
+	size_t workDims[] = {x, y};
 	size_t groupSize[] = {8, 8};
 
 	std::cout << "max work group size - " << maxLocalWorkSize  
 			  << "\n max work local work sizee dims - " << dims[0] << ","
 			  << dims[1] << "," << dims[2] << std::endl;
-	std::cout << "group size :: x - " << (x/div) << ", y - " << (y/div) << std::endl;
+	std::cout << "group size :: x - " << groupSize[0] << ", y - " << groupSize[1] << std::endl;
 
-	CHECK_RES( clEnqueueNDRangeKernel(commandQueue, kernel, 2, 0, workDims,
-						   			  groupSize, 0, nullptr, nullptr),
-				"Failed to enqueeueeue kernel!");
+	// execute each kernel
+	for (std::string kernel : kernelNames) {
+		CHECK_RES( clSetKernelArg(kernels[kernel], 0, sizeof(cl_mem), &inImgBuf),
+					"Failed to set kernel arg (inimg)!");
+		CHECK_RES( clSetKernelArg(kernels[kernel], 1, sizeof(cl_mem), &outImgBuf),
+					"Failed to set kernel arg (outimg)!");
 
+
+		CHECK_RES( clEnqueueNDRangeKernel(commandQueue, kernels[kernel], 2, 0, workDims,
+										  groupSize, 0, nullptr, nullptr),
+					"Failed to enqueeueeue kernel!");
+	}
+
+	// output reading
 	size_t origin[] = {0, 0, 0};
 	size_t readRegion[] = {x, y, 1};
 
@@ -371,6 +401,7 @@ int main(int argc, char* argv[]){
 								   	0, nullptr, nullptr),
 				"Failed to enqueue read iamge! out");
 
+	// reads in input image for debug
 	CHECK_RES( clEnqueueReadImage( commandQueue, inImgBuf, CL_TRUE, origin,
 						   			readRegion, x * sizeof(unsigned char) * 4, 0, data.get(),
 								   	0, nullptr, nullptr),
