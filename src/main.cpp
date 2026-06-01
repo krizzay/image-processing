@@ -7,6 +7,7 @@
 #include <CL/cl.h>
 #include <memory>
 #include <unordered_map>
+#include <functional>
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image.h"
@@ -258,37 +259,90 @@ const char* getChannelTypeName(cl_channel_type type) {
     }
 }
 
-template <typename T> void printTestImg(T* arr, int* dims){
+// not needed but still interesting
+/*template <typename Func, typename ... Args>
+bool func_api(Func fn, Args&&... args){
 
-	for(int i = 0; i < dims[0]; i++){
-			for(int j = 0; j < dims[1]; j++){
+	fn(std::forward<Args>(args)...);
+}
+*/
+
+bool testFun(int x, bool y){
+
+	std::cout << "test - " << x << " : " << y << std::endl;
+	return y;
+}
+
+enum StageType { KERNEL_STAGE, FUNCTION_STAGE };
+
+struct Stage {
+public:
+	StageType m_type;
+
+	virtual ~Stage() {}
+protected:
+	// protected constructor makes it kinda abstract class
+	Stage(StageType type) : m_type {type} {}
+};
+
+struct KernelStage : public Stage {
+public:
+	std::string m_kernelName;
+
+	std::vector<size_t> m_paramSizes;
+	std::vector<void *> m_ptrs;
+
+	KernelStage(StageType type, std::string name, std::vector<size_t> params, std::vector<void*> ptrs)
+		: Stage(type),
+		  m_kernelName {name},
+		  m_paramSizes {params},
+	  	  m_ptrs {ptrs}
+	{ }	
+
+};
+
+
+struct FunctionStage : public Stage {
+public:
+	std::function<bool()> m_fn;
 	
-				std::cout << "(";
-				for(int k = 0; k < dims[2]; k++){
-						std::cout << arr[(i * (dims[1] * dims[2])) + (dims[2] * j) + k]  << ", ";
-				}
-				std::cout << ")" << ", ";
-			}
-			std::cout << "|" << std::endl;
-	}
-	std::cout << std::endl;
+	FunctionStage(StageType type, std::function<bool()> fn) : Stage(type), m_fn {fn} {}
 
-}
+};
 
-template <typename T> void fill(T* arr, int* dims, T val){
 
-	for(int i = 0; i < dims[0] * dims[1] * dims[2]; i++){
-			arr[i] = val;
-	}
-
-}
 
 int main(int argc, char* argv[]){
 
+	std::vector<std::shared_ptr<Stage>> stages;
     // arg parsing
+	
+	// init all params at start and fill them out in arg parsing
+	int a = 5;
+	bool b = true;
+
+	// if sobel
+	if (true) {
+		int BlurKernelSize = 5;
+		std::vector<size_t> sizes = { sizeof(BlurKernelSize) };
+		std::vector<void*> ptrs = { &BlurKernelSize };
+
+		std::shared_ptr<Stage> ptr ( new KernelStage(KERNEL_STAGE, std::string("sobel.cl"), sizes, ptrs));  
+		stages.push_back(std::move(ptr));
+	}
+
+	// if function testFun
+	if (true) {
+		std::function<bool()> fn = [a, b](){ return testFun(a, b); };
+		std::shared_ptr<Stage> ptr ( new FunctionStage(FUNCTION_STAGE, fn));
+		stages.push_back(std::move(ptr));
+	}
+
 		
 	// setup
-	std::vector<std::string> kernelNames = { std::string("test.cl") };
+	
+	// TODO: either properly init kernelNames here or make setup accept stages
+	std::vector<std::string> kernelNames = { std::string("sobel.cl") };
 	if (setup(kernelNames) != true){
 		std::cerr << "Failed to set up opencl\n";
 		cleanup();
@@ -379,17 +433,40 @@ int main(int argc, char* argv[]){
 			  << dims[1] << "," << dims[2] << std::endl;
 	std::cout << "group size :: x - " << groupSize[0] << ", y - " << groupSize[1] << std::endl;
 
-	// execute each kernel
-	for (std::string kernel : kernelNames) {
-		CHECK_RES( clSetKernelArg(kernels[kernel], 0, sizeof(cl_mem), &inImgBuf),
-					"Failed to set kernel arg (inimg)!");
-		CHECK_RES( clSetKernelArg(kernels[kernel], 1, sizeof(cl_mem), &outImgBuf),
-					"Failed to set kernel arg (outimg)!");
+	for (auto& stage : stages){
 
+		// execute each kernel
+		if(stage->m_type == KERNEL_STAGE){
+			std::shared_ptr<KernelStage> krnlStagePtr = std::static_pointer_cast<KernelStage>(stage);
 
-		CHECK_RES( clEnqueueNDRangeKernel(commandQueue, kernels[kernel], 2, 0, workDims,
-										  groupSize, 0, nullptr, nullptr),
-					"Failed to enqueeueeue kernel!");
+			std::string krnlName = krnlStagePtr->m_kernelName;
+
+			// assume the first 2 args of each kernel is the in and out images
+			CHECK_RES( clSetKernelArg(kernels[krnlName], 0, sizeof(cl_mem), &inImgBuf),
+						"Failed to set kernel arg (inimg)!");
+			CHECK_RES( clSetKernelArg(kernels[krnlName], 1, sizeof(cl_mem), &outImgBuf),
+						"Failed to set kernel arg (outimg)!");
+
+			for(int i = 0; i < krnlStagePtr->m_paramSizes.size(); i++){
+
+				cl_int res = clSetKernelArg(kernels[krnlName], (i+2), krnlStagePtr->m_paramSizes[i], krnlStagePtr->m_ptrs[i]);
+				if (res != CL_SUCCESS){
+					std::cerr << "Failed to set param " << (i+2) << " for kernel " << krnlName 
+								<< std::endl << "Failed with error " << res << std::endl;
+					cleanup();
+					return 1;
+				}
+			}
+
+			CHECK_RES( clEnqueueNDRangeKernel(commandQueue, kernels[krnlName], 2, 0, workDims,
+											  groupSize, 0, nullptr, nullptr),
+						"Failed to enqueeueeue kernel!");
+		}
+		else if(stage->m_type == FUNCTION_STAGE){
+			
+			std::shared_ptr<FunctionStage> fn_s = std::static_pointer_cast<FunctionStage>(stage);
+			fn_s->m_fn();
+		}
 	}
 
 	// output reading
@@ -413,5 +490,4 @@ int main(int argc, char* argv[]){
 	stbi_write_png(outName, x, y, n, outData.get(), n * x); 
 
 	cleanup();
-
 }
